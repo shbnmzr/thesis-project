@@ -1,5 +1,5 @@
-import os
 import gzip
+import os
 import shutil
 from subprocess import call
 
@@ -29,6 +29,26 @@ def download_ncbi_genomes(output_dir, organism_groups):
             "--output-folder", output_dir
         ])
         print(f"Finished downloading {group} genomes!")
+
+
+def count_compressed_files(input_directory):
+    """
+    Counts the number of .fna.gz files in the input directory for each organism group.
+
+    Parameters:
+    - input_directory (str): Path to the directory containing .fna.gz files.
+
+    Returns:
+    - dict: A dictionary where keys are organism groups and values are counts of .fna.gz files.
+    """
+    counts = {}
+    for root, _, files in os.walk(input_directory):
+        # Use the subdirectory name to determine the organism group
+        group = os.path.basename(root)
+        fna_gz_count = sum(1 for file in files if file.endswith('.fna.gz'))
+        if fna_gz_count > 0:
+            counts[group] = counts.get(group, 0) + fna_gz_count
+    return counts
 
 
 def decompress_fna_files(input_directory, output_directory):
@@ -70,12 +90,16 @@ def main():
 
     # Specify the directory containing the downloaded data
     input_directory = "../../data/raw/refseq"
-    # Specify the output directory for decompressed .fna files
-    decompressed_output_directory = "../../data/decompressed"
 
-    decompress_fna_files(input_directory, decompressed_output_directory)
+    # Count the number of compressed files (.fna.gz) for each group
+    compressed_file_counts = count_compressed_files(input_directory)
 
-    print("All downloads and decompressions completed!")
+    # Print the counts
+    print("\nCounts of compressed .fna.gz files per organism group:")
+    for group, count in compressed_file_counts.items():
+        print(f"{group}: {count} files")
+
+    print("\nAll downloads and counting completed!")
 
 
 if __name__ == "__main__":
