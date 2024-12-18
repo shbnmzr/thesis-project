@@ -7,6 +7,7 @@ import urllib.request
 import requests
 from tqdm import tqdm
 
+
 def download_ncbi_genomes(output_dir, organism_groups):
     """
     Downloads complete genomes of specified organism groups using ncbi-genome-download.
@@ -59,7 +60,6 @@ def decompress_fna_files(input_directory, output_directory):
                 with gzip.open(filepath, 'rb') as f_in:
                     with open(output_file, 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
-                print(f"Decompressed {file} to {output_file}")
 
 
 def extract_fna_files_from_md5sum(input_directory, output_directory):
@@ -104,6 +104,7 @@ def extract_fna_files_from_md5sum(input_directory, output_directory):
                         # Download the file using requests with progress bar, avoiding redundant downloads
                         download_file_with_progress(ftp_link, output_file)
 
+
 def main():
     # Specify the output directory for the dataset
     output_directory = "../../data/raw"
@@ -116,12 +117,13 @@ def main():
     download_ncbi_genomes(output_directory, organism_groups_to_download)
 
     # Specify the directory containing the downloaded data
-    input_directory = "../../data/raw/refseq/bacteria"  # Adjust as needed
+    input_directory = "../../data/raw/refseq"
     # Specify the output directory for decompressed .fna files
-    decompressed_output_directory = "../../data/decompressed"  # Adjust as needed
+    decompressed_output_directory = "../../data/decompressed"
 
+    decompress_fna_files(input_directory, decompressed_output_directory)
     # Extract and decompress .fna.gz files
-    extract_fna_files_from_md5sum(input_directory, decompressed_output_directory)
+    # extract_fna_files_from_md5sum(input_directory, decompressed_output_directory)
 
     print("All downloads and decompressions completed!")
 
