@@ -25,7 +25,7 @@ def download_ncbi_genomes(output_dir, organism_groups):
             group,
             "--formats", "fasta",
             "--assembly-level", "complete",
-            "--parallel", "10",
+            "--parallel", "15",
             "--output-folder", output_dir
         ])
         print(f"Finished downloading {group} genomes!")
