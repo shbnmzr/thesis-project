@@ -62,8 +62,14 @@ def download_genome(accession, output_folder):
 
         # Extract .fna files from the ZIP archive
         extract_fna(zip_file, output_folder)
+
+        # Delete the ZIP file after extraction
+        os.remove(zip_file)
+        print(f"Deleted ZIP file: {zip_file}")
     except subprocess.CalledProcessError as e:
         print(f"Failed to download {accession}: {e}")
+    except Exception as e:
+        print(f"An error occurred while processing {accession}: {e}")
 
 
 # Function to extract .fna files from a ZIP archive
