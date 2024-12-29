@@ -1,105 +1,88 @@
-import gzip
 import os
-import shutil
-from subprocess import call
-
-
-def download_ncbi_genomes(output_dir, organism_groups):
-    """
-    Downloads complete genomes of specified organism groups using ncbi-genome-download.
-
-    Parameters:
-    - output_dir (str): Directory to save the downloaded genomes.
-    - organism_groups (list of str): Organism groups to download (e.g., 'bacteria', 'viral').
-
-    Requirements:
-    - ncbi-genome-download Python package (install via pip).
-    """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    for group in organism_groups:
-        print(f"Downloading {group} genomes...")
-        call([
-            "ncbi-genome-download",
-            group,
-            "--formats", "fasta",
-            "--assembly-level", "complete",
-            "--parallel", "15",
-            "--output-folder", output_dir
-        ])
-        print(f"Finished downloading {group} genomes!")
-
-
-def count_compressed_files(input_directory):
-    """
-    Counts the number of .fna.gz files in the input directory for each organism group.
-
-    Parameters:
-    - input_directory (str): Path to the directory containing .fna.gz files.
-
-    Returns:
-    - dict: A dictionary where keys are organism groups and values are counts of .fna.gz files.
-    """
-    counts = {}
-    for root, _, files in os.walk(input_directory):
-        # Use the subdirectory name to determine the organism group
-        group = os.path.basename(root)
-        fna_gz_count = sum(1 for file in files if file.endswith('.fna.gz'))
-        if fna_gz_count > 0:
-            counts[group] = counts.get(group, 0) + fna_gz_count
-    return counts
-
-
-def decompress_fna_files(input_directory, output_directory):
-    """
-    Decompresses all .fna.gz files in the input directory and saves them in the output directory.
-
-    Parameters:
-    - input_directory (str): Path to the directory containing the .fna.gz files.
-    - output_directory (str): Path to the directory where the decompressed .fna files will be saved.
-    """
-    # Create the output directory if it doesn't exist
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
-
-    # Loop through all directories in the input directory
-    for root, dirs, files in os.walk(input_directory):
-        for file in files:
-            # Check for .fna.gz files
-            if file.endswith('.fna.gz'):
-                # Full path to the .fna.gz file
-                filepath = os.path.join(root, file)
-                # Output file path (removing the .gz extension)
-                output_file = os.path.join(output_directory, file[:-3])  # Remove .gz
-                # Decompress the .fna.gz file
-                with gzip.open(filepath, 'rb') as f_in:
-                    with open(output_file, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
+import pandas as pd
+import subprocess
+import zipfile
 
 
 def main():
-    # Specify the output directory for the dataset
-    output_directory = "../../data/raw"
+    # Define metadata file paths and output directories
+    file_paths = {
+        "Bacteria": "../../data/raw/metadata/bacteria_ids.tsv",
+        "Archaea": "../../data/raw/metadata/archaea_ids.tsv",
+        "Fungi": "../../data/raw/metadata/fungi_ids.tsv",
+        "Eukaryote": "../../data/raw/metadata/eukaryote_ids.tsv",
+        "Viruses": "../../data/raw/metadata/viruses_ids.tsv",
+        "Plasmids": "../../data/raw/metadata/plasmids_ids.tsv",
+    }
 
-    # Specify organism groups to download
-    organism_groups_to_download = ["bacteria", "viral", "fungi", "protozoa"]
+    output_dir = "../../data/raw/genomes"
 
-    # Start the download process
-    download_ncbi_genomes(output_directory, organism_groups_to_download)
+    # Ensure output directories exist
+    os.makedirs(output_dir, exist_ok=True)
+    for group in file_paths.keys():
+        os.makedirs(os.path.join(output_dir, group), exist_ok=True)
 
-    # Specify the directory containing the downloaded data
-    input_directory = "../../data/raw/refseq"
+    # Process each metadata file
+    for group, path in file_paths.items():
+        print(f"Processing {group}...")
 
-    # Count the number of compressed files (.fna.gz) for each group
-    compressed_file_counts = count_compressed_files(input_directory)
+        # Load the metadata file
+        df = pd.read_csv(path, sep="\t", header=None, names=["Accession", "Release Date"])
 
-    # Print the counts
-    print("\nCounts of compressed .fna.gz files per organism group:")
-    for group, count in compressed_file_counts.items():
-        print(f"{group}: {count} files")
+        # Output folder for the taxonomic group
+        group_folder = os.path.join(output_dir, group)
 
-    print("\nAll downloads and counting completed!")
+        # Download each genome
+        for accession in df["Accession"]:
+            download_genome(accession, group_folder)
+
+    print("Download process completed.")
+
+
+# Function to download genomes
+def download_genome(accession, output_folder):
+    try:
+        # Define the output file path
+        zip_file = os.path.join(output_folder, f"{accession}.zip")
+
+        # Command to download genome data using `datasets`
+        command = [
+            "datasets",
+            "download",
+            "genome",
+            "accession",
+            accession,
+            "--filename",
+            zip_file,
+        ]
+
+        # Execute the command
+        subprocess.run(command, check=True)
+        print(f"Downloaded: {accession} to {zip_file}")
+
+        # Extract .fna files from the ZIP archive
+        extract_fna(zip_file, output_folder)
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to download {accession}: {e}")
+
+
+# Function to extract .fna files from a ZIP archive
+def extract_fna(zip_file, output_folder):
+    try:
+        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+            # List all files in the ZIP archive
+            files = zip_ref.namelist()
+
+            # Extract only .fna files
+            fna_files = [f for f in files if f.endswith(".fna")]
+            zip_ref.extractall(output_folder, members=fna_files)
+
+            if fna_files:
+                print(f"Extracted .fna files: {fna_files} to {output_folder}")
+            else:
+                print(f"No .fna files found in {zip_file}")
+    except zipfile.BadZipFile as e:
+        print(f"Failed to extract {zip_file}: {e}")
 
 
 if __name__ == "__main__":
