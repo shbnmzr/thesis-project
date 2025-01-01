@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import subprocess
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def main():
@@ -22,19 +23,33 @@ def main():
     for group in file_paths.keys():
         os.makedirs(os.path.join(output_dir, group), exist_ok=True)
 
-    # Process each metadata file
-    for group, path in file_paths.items():
-        print(f"Processing {group}...")
+    # Use ThreadPoolExecutor for parallel downloads
+    with ThreadPoolExecutor() as executor:
+        future_to_accession = {}
 
-        # Load the metadata file
-        df = pd.read_csv(path, sep="\t", header=None, names=["Accession", "Release Date"])
+        # Process each metadata file
+        for group, path in file_paths.items():
+            print(f"Processing {group}...")
 
-        # Output folder for the taxonomic group
-        group_folder = os.path.join(output_dir, group)
+            # Load the metadata file
+            df = pd.read_csv(path, sep="\t", header=None, names=["Accession", "Release Date"])
 
-        # Download each genome
-        for accession in df["Accession"]:
-            download_genome(accession, group_folder)
+            # Output folder for the taxonomic group
+            group_folder = os.path.join(output_dir, group)
+
+            # Submit genome downloads to the thread pool
+            for accession in df["Accession"]:
+                future = executor.submit(download_genome, accession, group_folder)
+                future_to_accession[future] = accession
+
+        # Monitor progress
+        for future in as_completed(future_to_accession):
+            accession = future_to_accession[future]
+            try:
+                future.result()
+                print(f"Completed: {accession}")
+            except Exception as e:
+                print(f"Failed to process {accession}: {e}")
 
     print("Download process completed.")
 
@@ -42,7 +57,13 @@ def main():
 # Function to download genomes
 def download_genome(accession, output_folder):
     try:
-        # Define the output file path
+        # Check if the genome has already been downloaded
+        fna_file = os.path.join(output_folder, f"{accession}.fna")
+        if os.path.exists(fna_file):
+            print(f"Skipped: {accession} (already downloaded)")
+            return
+
+        # Define the output file path for the ZIP archive
         zip_file = os.path.join(output_folder, f"{accession}.zip")
 
         # Command to download genome data using `datasets`
@@ -84,7 +105,11 @@ def extract_fna(zip_file, output_folder):
             zip_ref.extractall(output_folder, members=fna_files)
 
             if fna_files:
-                print(f"Extracted .fna files: {fna_files} to {output_folder}")
+                # Rename the extracted .fna file to match the accession
+                extracted_file = os.path.join(output_folder, fna_files[0])
+                renamed_file = os.path.join(output_folder, f"{os.path.basename(zip_file).replace('.zip', '.fna')}")
+                os.rename(extracted_file, renamed_file)
+                print(f"Extracted and renamed: {renamed_file}")
             else:
                 print(f"No .fna files found in {zip_file}")
     except zipfile.BadZipFile as e:
