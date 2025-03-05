@@ -1,4 +1,6 @@
 import os
+import time
+
 import pandas as pd
 import subprocess
 import zipfile
@@ -55,42 +57,29 @@ def main():
 
 
 # Function to download genomes
-def download_genome(accession, output_folder):
-    try:
-        # Check if the genome has already been downloaded
-        fna_file = os.path.join(output_folder, f"{accession}.fna")
-        if os.path.exists(fna_file):
-            print(f"Skipped: {accession} (already downloaded)")
+def download_genome(accession, output_folder, retries=3):
+    for attempt in range(retries):
+        try:
+            fna_file = os.path.join(output_folder, f"{accession}.fna")
+            if os.path.exists(fna_file):
+                print(f"Skipped: {accession} (already downloaded)")
+                return
+
+            zip_file = os.path.join(output_folder, f"{accession}.zip")
+            command = [
+                "datasets", "download", "genome", "accession",
+                accession, "--filename", zip_file
+            ]
+            subprocess.run(command, check=True)
+            extract_fna(zip_file, output_folder)
+            os.remove(zip_file)
             return
-
-        # Define the output file path for the ZIP archive
-        zip_file = os.path.join(output_folder, f"{accession}.zip")
-
-        # Command to download genome data using `datasets`
-        command = [
-            "datasets",
-            "download",
-            "genome",
-            "accession",
-            accession,
-            "--filename",
-            zip_file,
-        ]
-
-        # Execute the command
-        subprocess.run(command, check=True)
-        print(f"Downloaded: {accession} to {zip_file}")
-
-        # Extract .fna files from the ZIP archive
-        extract_fna(zip_file, output_folder)
-
-        # Delete the ZIP file after extraction
-        os.remove(zip_file)
-        print(f"Deleted ZIP file: {zip_file}")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to download {accession}: {e}")
-    except Exception as e:
-        print(f"An error occurred while processing {accession}: {e}")
+        except subprocess.CalledProcessError as e:
+            print(f"Attempt {attempt + 1} failed for {accession}: {e}")
+            if attempt < retries - 1:
+                time.sleep(5)
+            else:
+                print(f"Failed after {retries} attempts: {accession}")
 
 
 # Function to extract .fna files from a ZIP archive
