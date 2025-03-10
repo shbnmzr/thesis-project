@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-CATEGORY="protozoa"
+CATEGORY="fungi"
 BASE_DIR="/home/zareshahra/thesis/4CAC_dataset"
 METADATA_DIR="$BASE_DIR/metadata"
 GENOME_DIR="$BASE_DIR/genomes/$CATEGORY"
