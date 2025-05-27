@@ -7,7 +7,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from Bio import SeqIO
 
-CATEGORY = "protozoa"  # Change as needed
+CATEGORY = "archaea"  # Change as needed
 BASE_DIR = Path("../4CAC_dataset")
 METADATA_DIR = BASE_DIR / "metadata"
 TRAIN_DIR = BASE_DIR / "train" / CATEGORY
