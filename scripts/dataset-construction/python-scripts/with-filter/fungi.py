@@ -44,7 +44,7 @@ with open(summary_file) as f:
         if len(parts) > 14:
             try:
                 release_date = datetime.strptime(parts[14], "%Y-%m-%d")
-                if parts[11] in {"Complete Genome", "Chromosome"} and parts[10] == "latest":
+                if parts[11] in {"Complete Genome", "Chromosome", "Scaffold"} and parts[10] == "latest":
                     path = parts[ftp_col_index]
                     if release_date < TRAIN_CUTOFF:
                         dataset_entries["train"].append((path, release_date))
