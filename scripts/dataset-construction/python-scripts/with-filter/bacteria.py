@@ -13,7 +13,7 @@ TRAIN_DIR = BASE_DIR / "train" / CATEGORY
 VAL_DIR = BASE_DIR / "val" / CATEGORY
 TEST_DIR = BASE_DIR / "test" / CATEGORY
 
-TRAIN_CUTOFF = datetime.strptime("2021-12-01", "%Y-%m-%d")
+TRAIN_CUTOFF = datetime.strptime("2021-12-31", "%Y-%m-%d")
 VAL_CUTOFF = datetime.strptime("2022-04-01", "%Y-%m-%d")
 TEST_END = datetime.strptime("2023-04-01", "%Y-%m-%d")
 
