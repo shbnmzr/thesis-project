@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 import argparse
-import shutil
+import time
 
 
 def main(split, category):
@@ -16,41 +16,33 @@ def main(split, category):
     for fasta_file in input_dir.glob("*.cleaned.fna"):
         genome_id = fasta_file.stem.replace(".cleaned", "")
         genome_out_dir = output_dir / genome_id
+        genome_out_dir.mkdir(parents=True, exist_ok=True)
 
-        if (genome_out_dir / "assembly_graph.gfa").exists():
+        gfa_file = genome_out_dir / "assembly_graph_with_scaffolds.gfa"
+        if gfa_file.exists():
             print(f"[SKIP] Already exists: {genome_id}")
             continue
 
-        # Prepare temp .fa copy
-        renamed_fasta = genome_out_dir / f"{genome_id}.fa"
-        genome_out_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(fasta_file, renamed_fasta)
-
         cmd = [
             "/path/to/venv/spades/bin/spades.py",
-            "--sc",
-            "-s", str(renamed_fasta),
+            "--meta",
+            "--trusted-contigs", str(fasta_file),
             "-o", str(genome_out_dir),
             "--only-assembler"
         ]
 
         print(f"[INFO] Running metaSPAdes on: {genome_id}")
+        start = time.time()
         try:
             subprocess.run(cmd, check=True)
-            print(f"[DONE] {genome_id}")
+            duration = time.time() - start
+            print(f"[DONE] {genome_id} in {duration:.1f} seconds")
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] metaSPAdes failed for {genome_id}: {e}")
-        finally:
-            # Always remove the temporary .fa file
-            try:
-                renamed_fasta.unlink()
-                print(f"[CLEANUP] Removed temporary file: {renamed_fasta}")
-            except Exception as e:
-                print(f"[WARNING] Could not delete temp file {renamed_fasta}: {e}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run metaSPAdes on cleaned .fna files.")
+    parser = argparse.ArgumentParser(description="Run metaSPAdes on cleaned .fna contigs using --trusted-contigs.")
     parser.add_argument("--split", type=str, required=True, help="Data split (e.g., train, val, test)")
     parser.add_argument("--category", type=str, required=True, help="Genome category (e.g., bacteria, archaea)")
     args = parser.parse_args()

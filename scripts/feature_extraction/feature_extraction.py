@@ -2,13 +2,20 @@ import os
 import csv
 import json
 import argparse
+import subprocess
+import tempfile
 from pathlib import Path
-from collections import defaultdict
 from itertools import product
 
+import numpy as np
 import torch
 from Bio import SeqIO
 
+# --- Constants ---
+K = 4
+KMER_LIST = [''.join(p) for p in product("ACGT", repeat=K)]
+KMER_INDEX = {kmer: i for i, kmer in enumerate(KMER_LIST)}
+AMBIGUOUS_BASES = set("NRYSWKMBVDH")
 LABELS = {
     "bacteria": 0,
     "archaea": 1,
@@ -18,23 +25,35 @@ LABELS = {
     "protozoa": 4,
 }
 
-K = 4
-KMER_LIST = [''.join(p) for p in product("ACGT", repeat=K)]
-KMER_INDEX = {kmer: i for i, kmer in enumerate(KMER_LIST)}
-AMBIGUOUS_BASES = set("NRYSWKMBVDH")
 
-def compute_kmer_freq(seq, k=4):
-    seq = seq.upper()
-    total = len(seq) - k + 1
-    vec = [0] * len(KMER_LIST)
-    for i in range(total):
-        kmer = seq[i:i + k]
-        if all(c in "ACGT" for c in kmer):
-            vec[KMER_INDEX[kmer]] += 1
-    return [v / total for v in vec] if total > 0 else vec
+# --- Functions ---
+def compute_kmer_freq_jellyfish(seq, k=4):
+    vec = np.zeros(4**k, dtype=np.float32)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        fasta_path = tmpdir / "temp.fa"
+        output_txt = tmpdir / "counts.txt"
+
+        with open(fasta_path, "w") as f:
+            f.write(">seq\n" + seq + "\n")
+
+        subprocess.run(["bash", "count_kmers.sh", str(fasta_path), str(output_txt)], check=True)
+
+        total = 0
+        with open(output_txt) as f:
+            for line in f:
+                kmer, count = line.strip().split()
+                if kmer in KMER_INDEX:
+                    vec[KMER_INDEX[kmer]] = int(count)
+                    total += int(count)
+        if total > 0:
+            vec /= total
+    return vec.tolist()
+
 
 def compute_ambiguity_rate(seq):
     return sum(1 for c in seq if c in AMBIGUOUS_BASES) / len(seq)
+
 
 def process_fasta(fasta_path, gc_content, avg_length, label):
     features, labels, contig_names = [], [], []
@@ -42,7 +61,7 @@ def process_fasta(fasta_path, gc_content, avg_length, label):
         seq = str(record.seq).upper()
         if len(seq) < K:
             continue
-        kmers = compute_kmer_freq(seq, k=K)
+        kmers = compute_kmer_freq_jellyfish(seq)
         amb_rate = compute_ambiguity_rate(seq)
         log_len = torch.log1p(torch.tensor(len(seq), dtype=torch.float)).item() / 20
         full_feat = [gc_content / 100.0, avg_length / 1e6, log_len, amb_rate] + kmers
@@ -51,17 +70,19 @@ def process_fasta(fasta_path, gc_content, avg_length, label):
         contig_names.append(record.id)
     return contig_names, features, labels
 
+
 def load_preprocessing_report(report_path):
     with open(report_path) as f:
         return [r for r in csv.DictReader(f) if r["Status"] == "KEPT"]
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_root", required=True, type=str)
-    parser.add_argument("--log_root", required=True, type=str)
-    parser.add_argument("--output_dir", default="processed_chunks", type=str)
-    parser.add_argument("--split", type=str, help="Data split to process (e.g. train, val, test)")
-    parser.add_argument("--category", type=str, help="Genome category (e.g. bacteria, archaea)")
+    parser.add_argument("--dataset_root", required=True)
+    parser.add_argument("--log_root", required=True)
+    parser.add_argument("--output_dir", default="processed_chunks")
+    parser.add_argument("--split", type=str)
+    parser.add_argument("--category", type=str)
     args = parser.parse_args()
 
     dataset_root = Path(args.dataset_root)
@@ -76,10 +97,9 @@ def main():
         for category in categories:
             label = LABELS.get(category)
             if label is None:
-                print(f"[WARNING] Unknown category '{category}' — skipping.")
+                print(f"[WARNING] Unknown category '{category}'")
                 continue
 
-            print(f"[INFO] Processing {split}/{category}")
             report_path = log_root / split / f"{category}_preprocessing_report.csv"
             if not report_path.exists():
                 print(f"[WARNING] Report not found: {report_path}")
@@ -106,7 +126,6 @@ def main():
                 chunk_contigs.extend(contigs)
 
             if not chunk_features:
-                print(f"[WARNING] No features extracted for {split}/{category}")
                 continue
 
             torch.save(torch.tensor(chunk_features, dtype=torch.float), output_dir / f"{split}_{category}_features.pt")
@@ -114,7 +133,8 @@ def main():
             with open(output_dir / f"{split}_{category}_contigs.json", "w") as f:
                 json.dump(chunk_contigs, f)
 
-            print(f"[DONE] Saved {len(chunk_features)} contigs for {split}/{category}")
+            print(f"[DONE] {split}/{category}: {len(chunk_features)} contigs")
+
 
 if __name__ == "__main__":
     main()
