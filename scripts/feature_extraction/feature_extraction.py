@@ -19,7 +19,7 @@ AMBIGUOUS_BASES = set("NRYSWKMBVDH")
 LABELS = {
     "bacteria": 0,
     "archaea": 1,
-    "virus": 2,
+    "viral": 2,
     "plasmid": 3,
     "fungi": 4,
     "protozoa": 4,
@@ -55,25 +55,67 @@ def compute_ambiguity_rate(seq):
     return sum(1 for c in seq if c in AMBIGUOUS_BASES) / len(seq)
 
 
-def process_fasta(fasta_path, gc_content, avg_length, label):
-    features, labels, contig_names = [], [], []
+def load_preprocessing_report(report_path):
+    with open(report_path) as f:
+        return [r for r in csv.DictReader(f) if r["Status"] == "KEPT"]
+
+
+def process_fasta_batchwise(fasta_path, gc_content, avg_length, label, batch_size, batch_callback):
+    batch_features, batch_labels, batch_contigs = [], [], []
+    count = 0
+
     for record in SeqIO.parse(fasta_path, "fasta"):
         seq = str(record.seq).upper()
         if len(seq) < K:
             continue
+
         kmers = compute_kmer_freq_jellyfish(seq)
         amb_rate = compute_ambiguity_rate(seq)
         log_len = torch.log1p(torch.tensor(len(seq), dtype=torch.float)).item() / 20
         full_feat = [gc_content / 100.0, avg_length / 1e6, log_len, amb_rate] + kmers
-        features.append(full_feat)
-        labels.append(label)
-        contig_names.append(record.id)
-    return contig_names, features, labels
+
+        batch_features.append(full_feat)
+        batch_labels.append(label)
+        batch_contigs.append(record.id)
+        count += 1
+
+        if count % batch_size == 0:
+            batch_callback(batch_features, batch_labels, batch_contigs)
+            batch_features, batch_labels, batch_contigs = [], [], []
+
+    if batch_features:
+        batch_callback(batch_features, batch_labels, batch_contigs)
 
 
-def load_preprocessing_report(report_path):
-    with open(report_path) as f:
-        return [r for r in csv.DictReader(f) if r["Status"] == "KEPT"]
+def merge_batches(output_dir, split, category):
+    feature_parts = sorted(output_dir.glob(f"{split}_{category}_features_part*.pt"))
+    label_parts = sorted(output_dir.glob(f"{split}_{category}_labels_part*.pt"))
+    contig_parts = sorted(output_dir.glob(f"{split}_{category}_contigs_part*.json"))
+
+    all_features = [torch.load(p, weights_only=True) for p in feature_parts]
+    all_labels = [torch.load(p, weights_only=True) for p in label_parts]
+    all_contigs = []
+    for p in contig_parts:
+        with open(p) as f:
+            all_contigs.extend(json.load(f))
+
+    merged_features = torch.cat(all_features)
+    merged_labels = torch.cat(all_labels)
+
+    torch.save(merged_features, output_dir / f"{split}_{category}_features.pt")
+    torch.save(merged_labels, output_dir / f"{split}_{category}_labels.pt")
+    with open(output_dir / f"{split}_{category}_contigs.json", "w") as f:
+        json.dump(all_contigs, f)
+
+    print(f"[MERGED] {split}/{category}: {len(merged_features)} contigs")
+
+    # Clean up part files
+    for p in feature_parts + label_parts + contig_parts:
+        try:
+            p.unlink()
+            print(f"[DELETED] {p.name}")
+        except Exception as e:
+            print(f"[ERROR] Failed to delete {p.name}: {e}")
 
 
 def main():
@@ -83,6 +125,7 @@ def main():
     parser.add_argument("--output_dir", default="processed_chunks")
     parser.add_argument("--split", type=str)
     parser.add_argument("--category", type=str)
+    parser.add_argument("--batch_size", type=int, default=5000)
     args = parser.parse_args()
 
     dataset_root = Path(args.dataset_root)
@@ -112,7 +155,17 @@ def main():
                 continue
 
             cleaned_dir = dataset_root / split / category / "cleaned"
-            chunk_features, chunk_labels, chunk_contigs = [], [], []
+            part_id = 0
+
+            def save_batch(features, labels, contigs):
+                nonlocal part_id
+                torch.save(torch.tensor(features, dtype=torch.float), output_dir / f"{split}_{category}_features_part{part_id}.pt")
+                torch.save(torch.tensor(labels, dtype=torch.long), output_dir / f"{split}_{category}_labels_part{part_id}.pt")
+                with open(output_dir / f"{split}_{category}_contigs_part{part_id}.json", "w") as f:
+                    json.dump(contigs, f)
+                print(f"[SAVED] {split}/{category} - batch {part_id} with {len(features)} contigs")
+                part_id += 1
+
             for row in rows:
                 fasta_name = row["Filename"].replace(".fna", ".cleaned.fna")
                 fasta_path = cleaned_dir / fasta_name
@@ -120,20 +173,10 @@ def main():
                     continue
                 gc = float(row["GC Content (%)"])
                 avg_len = float(row["Avg Length"])
-                contigs, feats, labels = process_fasta(fasta_path, gc, avg_len, label)
-                chunk_features.extend(feats)
-                chunk_labels.extend(labels)
-                chunk_contigs.extend(contigs)
+                process_fasta_batchwise(fasta_path, gc, avg_len, label, args.batch_size, save_batch)
 
-            if not chunk_features:
-                continue
-
-            torch.save(torch.tensor(chunk_features, dtype=torch.float), output_dir / f"{split}_{category}_features.pt")
-            torch.save(torch.tensor(chunk_labels, dtype=torch.long), output_dir / f"{split}_{category}_labels.pt")
-            with open(output_dir / f"{split}_{category}_contigs.json", "w") as f:
-                json.dump(chunk_contigs, f)
-
-            print(f"[DONE] {split}/{category}: {len(chunk_features)} contigs")
+            # Merge parts
+            merge_batches(output_dir, split, category)
 
 
 if __name__ == "__main__":
