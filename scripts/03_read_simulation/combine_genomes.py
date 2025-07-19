@@ -18,7 +18,7 @@ Usage:
 import argparse
 import logging
 from pathlib import Path
-from scripts.helpers.logger import setup_logger
+from scripts.utils.logger import setup_logger
 
 
 def combine_fasta(split_dir: Path, output_file: Path, categories=None):

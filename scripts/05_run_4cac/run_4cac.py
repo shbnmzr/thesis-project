@@ -17,7 +17,7 @@ import subprocess
 import logging
 from pathlib import Path
 import sys
-from scripts.helpers.logger import setup_logger
+from scripts.utils.logger import setup_logger
 
 def ensure_trailing_slash(path: Path) -> str:
     """Ensure a trailing slash for paths required by 4CAC."""

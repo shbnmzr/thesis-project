@@ -16,7 +16,7 @@ import subprocess
 import logging
 from pathlib import Path
 import sys
-from scripts.helpers.logger import setup_logger
+from scripts.utils.logger import setup_logger
 
 
 def check_existing_outputs(output_dir: Path):
