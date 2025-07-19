@@ -18,23 +18,7 @@ import subprocess
 import logging
 from pathlib import Path
 import sys
-
-
-# -----------------------------
-# LOGGING
-# -----------------------------
-def setup_logger(log_file: Path):
-    """Set up logging to both file and stdout."""
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-    logging.info(f"Logging initialized. Log file: {log_file.resolve()}")
+from scripts.helpers.logger import setup_logger
 
 
 # -----------------------------
