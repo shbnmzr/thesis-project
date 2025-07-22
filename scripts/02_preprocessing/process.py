@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Genome Preprocessing and Deduplication (4CAC-style, Batch-wise Mash)
+Genome Preprocessing and Deduplication
 --------------------------------------------------------------------
 
 Features:
