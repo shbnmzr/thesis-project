@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Genome Preprocessing and Deduplication
---------------------------------------------------------------------
+----------------------------------------------------------------------------------
 
 Features:
 1. Cleans genomes by:
@@ -12,8 +12,8 @@ Features:
 2. Deduplicates across splits (train/val/test):
    - Exact duplicates (MD5 hash)
    - Near-identical genomes (Mash distance ≤ 0.05 ≈ ANI ≥ 95%)
-   - Compares all pairs: train-vs-val, train-vs-test, val-vs-test
-   - Batch-wise Mash for memory efficiency
+   - Compares all pairs: train-val, train-test, val-test
+   - Batch-wise Mash for memory efficiency and long argument list prevention
 
 Outputs:
 - Cleaned FASTAs under train/val/test/<category>/cleaned
@@ -110,6 +110,7 @@ def compute_genome_hash(fasta_path):
 def deduplicate_across_splits(base_dir: Path, category: str, log_dir: Path):
     """
     Remove genomes from val/test if identical to train genomes (MD5 hash).
+    Also remove duplicates between val and test.
     """
     logging.info("Starting cross-split deduplication (exact duplicates)...")
     splits = ["train", "val", "test"]
@@ -128,17 +129,17 @@ def deduplicate_across_splits(base_dir: Path, category: str, log_dir: Path):
 
     for split in ["val", "test"]:
         for f, h in list(genome_hashes[split].items()):
-            if h in train_hashes:
+            if h in train_hashes and f.exists():
                 logging.warning(f"Removing duplicate genome in {split}: {f.name}")
-                removed.append((split, f.name, "Exact duplicate (MD5, Train vs " + split.capitalize() + ")"))
                 f.unlink()
+                removed.append((split, f.name, f"Exact duplicate (MD5, Train vs {split.capitalize()})"))
 
-    # Check val-test overlap (delete from test)
+    # Val vs Test
     for f, h in list(genome_hashes["test"].items()):
-        if h in val_hashes:
+        if h in val_hashes and f.exists():
             logging.warning(f"Removing duplicate genome in test: {f.name}")
-            removed.append(("test", f.name, "Exact duplicate (MD5, Val vs Test)"))
             f.unlink()
+            removed.append(("test", f.name, "Exact duplicate (MD5, Val vs Test)"))
 
     # Save report
     report_file = log_dir / f"{category}_deduplication_report.csv"
@@ -149,17 +150,9 @@ def deduplicate_across_splits(base_dir: Path, category: str, log_dir: Path):
             writer.writerow(row)
     logging.info(f"Exact deduplication complete. Report saved: {report_file}")
 
-def sketch_genomes_with_mash(genome_paths, sketch_file):
-    """Create a Mash sketch for a list of genomes."""
-    if not genome_paths:
-        return
-    cmd_sketch = ["mash", "sketch", "-o", str(sketch_file)] + [str(g) for g in genome_paths]
-    logging.info(f"Sketching {len(genome_paths)} genomes → {sketch_file}.msh")
-    subprocess.run(cmd_sketch, check=True)
-
 def mash_compare(query_sketch, ref_sketch):
     """Run Mash distance between query and reference sketches."""
-    cmd_dist = ["mash", "dist", f"{ref_sketch}.msh", f"{query_sketch}.msh"]
+    cmd_dist = ["mash", "dist", ref_sketch, query_sketch]
     result = subprocess.run(cmd_dist, capture_output=True, text=True, check=True)
     distances = {}
     for line in result.stdout.strip().split("\n"):
@@ -169,13 +162,33 @@ def mash_compare(query_sketch, ref_sketch):
         distances[(Path(query).name, Path(ref).name)] = float(dist)
     return distances
 
+def sketch_genomes_in_batches(genome_paths, sketch_prefix, batch_size=200):
+    """Sketch genomes in batches and merge into one .msh file."""
+    batch_files = []
+    for i in range(0, len(genome_paths), batch_size):
+        batch = genome_paths[i:i + batch_size]
+        batch_sketch = f"{sketch_prefix}_batch_{i//batch_size}"
+        cmd_sketch = ["mash", "sketch", "-o", batch_sketch] + [str(g) for g in batch]
+        logging.info(f"Sketching batch {i//batch_size + 1}: {len(batch)} genomes → {batch_sketch}.msh")
+        subprocess.run(cmd_sketch, check=True)
+        batch_files.append(f"{batch_sketch}.msh")
+
+    if len(batch_files) == 1:
+        return batch_files[0]
+
+    merged_sketch = f"{sketch_prefix}_merged"
+    cmd_paste = ["mash", "paste", merged_sketch] + batch_files
+    logging.info(f"Merging {len(batch_files)} batch sketches → {merged_sketch}.msh")
+    subprocess.run(cmd_paste, check=True)
+    return f"{merged_sketch}.msh"
+
 def remove_near_identicals_batch(base_dir: Path, category: str, log_dir: Path,
                                  threshold=0.05, batch_size=100):
     """
     Remove near-identical genomes (Mash distance ≤ threshold) across:
     - train vs val
     - train vs test
-    - val vs test (removes from test)
+    - val vs test
     """
     logging.info(f"Running Mash-based near-identical removal (batch size={batch_size})...")
 
@@ -185,24 +198,28 @@ def remove_near_identicals_batch(base_dir: Path, category: str, log_dir: Path,
         if not ref_paths or not query_paths:
             return []
 
-        ref_sketch = log_dir / f"{category}_{ref_split}_mash"
-        sketch_genomes_with_mash(ref_paths, ref_sketch)
-
+        ref_sketch = sketch_genomes_in_batches(ref_paths, str(log_dir / f"{category}_{ref_split}_mash"), batch_size=200)
         removed_local = []
+
         for i in range(0, len(query_paths), batch_size):
             batch = query_paths[i:i + batch_size]
-            batch_sketch = log_dir / f"{category}_{query_split}_batch_{i//batch_size}"
-            sketch_genomes_with_mash(batch, batch_sketch)
-            distances = mash_compare(batch_sketch, ref_sketch)
+            batch_sketch = str(log_dir / f"{category}_{query_split}_batch_{i//batch_size}")
+            cmd_sketch = ["mash", "sketch", "-o", batch_sketch] + [str(g) for g in batch]
+            subprocess.run(cmd_sketch, check=True)
+            distances = mash_compare(f"{batch_sketch}.msh", ref_sketch)
 
             for genome in batch:
                 for ref_file in ref_paths:
                     key = (genome.name, ref_file.name)
                     if key in distances and distances[key] <= threshold:
-                        logging.warning(f"Removing near-identical genome in {query_split}: {genome.name}")
-                        genome.unlink()
-                        removed_local.append((query_split, genome.name,
-                                              f"Mash_dist={distances[key]:.4f} ({ref_split.capitalize()} vs {query_split.capitalize()})"))
+                        if genome.exists():
+                            logging.warning(f"Removing near-identical genome in {query_split}: {genome.name}")
+                            genome.unlink()
+                            removed_local.append((
+                                query_split,
+                                genome.name,
+                                f"Mash_dist={distances[key]:.4f} ({ref_split.capitalize()} vs {query_split.capitalize()})"
+                            ))
                         break
         return removed_local
 
@@ -211,7 +228,6 @@ def remove_near_identicals_batch(base_dir: Path, category: str, log_dir: Path,
     removed += compare_and_remove("train", "test")
     removed += compare_and_remove("val", "test")
 
-    # Save report
     report_file = log_dir / f"{category}_near_identical_report.csv"
     with open(report_file, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
@@ -226,7 +242,7 @@ def remove_near_identicals_batch(base_dir: Path, category: str, log_dir: Path,
 def main():
     parser = argparse.ArgumentParser(description="Clean and deduplicate FASTA files by length, ambiguity, and similarity.")
     parser.add_argument("--base_dir", type=str, required=True, help="Base directory of the dataset")
-    parser.add_argument("--category", type=str, required=True, help="Genome category")
+    parser.add_argument("--category", type=str, required=True, help="Genome category (e.g., archaea)")
     parser.add_argument("--min_len", type=int, default=1000, help="Minimum contig length")
     parser.add_argument("--max_ambig", type=float, default=0.05, help="Maximum allowed ambiguous base ratio")
     parser.add_argument("--min_contigs", type=int, default=10, help="Minimum number of contigs to keep genome")
@@ -264,7 +280,8 @@ def main():
                 gc, avg_len = get_gc_and_avg_len(cleaned_path)
                 status = "KEPT"
             elif cleaned_path:
-                cleaned_path.unlink()
+                if cleaned_path.exists():
+                    cleaned_path.unlink()
                 gc, avg_len = 0.0, 0.0
                 status = "DELETED (too few contigs)"
             else:
@@ -281,7 +298,6 @@ def main():
                 writer.writerow(row)
         logging.info(f"Preprocessing complete for {split}. Report: {report_file}")
 
-    # Deduplication across splits
     deduplicate_across_splits(base_path, args.category, log_dir)
     remove_near_identicals_batch(base_path, args.category, log_dir, threshold=0.05, batch_size=100)
 
