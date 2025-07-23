@@ -28,24 +28,10 @@ import subprocess
 from pathlib import Path
 from Bio import SeqIO
 import csv
+from scripts.utils.logger import setup_per_category_logger
 
 # --- Ambiguous base set ---
 AMBIGUOUS_BASES = set("NRYSWKMBVDH")
-
-# -----------------------------
-# Logging
-# -----------------------------
-def setup_logging(log_dir: Path, category: str):
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{category}_preprocessing.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] %(levelname)s: %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
 
 # -----------------------------
 # Cleaning Functions
@@ -253,7 +239,7 @@ def main():
     splits = ["train", "val", "test"]
     log_dir = Path(args.log_dir)
 
-    setup_logging(log_dir, args.category)
+    setup_per_category_logger(log_dir, args.category)
 
     for split in splits:
         genome_dir = base_path / split / args.category
