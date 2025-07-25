@@ -1,0 +1,3 @@
+Split,Filename_Removed,Reason
+test,GCA_023627895.1_ASM2362789v1_genomic.cleaned.fna,"Exact duplicate (MD5, Train vs Test)"
+test,GCA_025504425.1_ASM2550442v1_genomic.cleaned.fna,"Exact duplicate (MD5, Train vs Test)"
