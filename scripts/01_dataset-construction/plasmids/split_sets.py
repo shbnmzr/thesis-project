@@ -3,9 +3,9 @@
 Split raw genome files into train/val/test sets.
 
 Usage:
-    python split_dataset.py \
+    python split_sets.py \
         --category plasmid \
-        --base_dir ./4CAC_dataset \
+        --base_dir ./dataset \
         --train_ratio 0.85 \
         --val_ratio 0.05 \
         --test_ratio 0.10

@@ -3,9 +3,9 @@
 Split a multi-FASTA file into individual FASTA files by accession.
 
 Usage:
-    python split_fasta_by_accession.py \
-        --input_fasta ../4CAC_dataset/genomes/plasmids/all_plasmids.fasta \
-        --output_dir ../4CAC_dataset/train/plasmid/raw
+    python split_fna.py \
+        --input_fasta ../dataset/genomes/plasmids/all_plasmids.fasta \
+        --output_dir ../dataset/train/plasmid/raw
 """
 
 import argparse

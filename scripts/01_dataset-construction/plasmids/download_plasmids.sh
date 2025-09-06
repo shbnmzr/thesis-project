@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-BASE_DIR="./4CAC_dataset"
+BASE_DIR="./dataset"
 CATEGORY="plasmids"
 GENOME_DIR="$BASE_DIR/genomes/$CATEGORY"
 METADATA_DIR="$BASE_DIR/metadata"
