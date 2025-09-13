@@ -12,7 +12,7 @@
 #SBATCH --mem=48G
 #SBATCH --time=10-00:00:00
 # Optional / cluster-specific:
-# #SBATCH --partition=general   # <- adjust or comment out as needed
+# #SBATCH --partition=general
 
 set -euo pipefail
 umask 0022
@@ -355,15 +355,15 @@ fi
 
 # ======================= USAGE NOTES =======================
 # Submit with defaults:
-#   sbatch slurm/sim_short_train_portable.slurm
+#   sbatch slurm/simulate_short_reads.slurm
 #
 # Run single community:
-#   sbatch slurm/sim_short_train_portable.slurm TrainC_short_01
+#   sbatch slurm/simulate_short_reads.slurm TrainC_short_01
 #
 # Override parameters at submit time (examples):
 #   sbatch --cpus-per-task=4 --mem=64G --time=5-00:00:00 \
 #          --export=ALL,TOTAL_PAIRS_GENERIC=2000000,CHUNKS=4,SHUFFLE=yes \
-#          slurm/sim_short_train_portable.slurm
+#          slurm/simulate_short_reads.slurm
 #
 # Use a conda env or modules before submission, or add to the top:
 #   module load python/3.10
