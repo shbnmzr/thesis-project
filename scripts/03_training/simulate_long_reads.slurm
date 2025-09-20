@@ -1,135 +1,83 @@
-#!/usr/bin/env bash
-# Portable SLURM job for long-read simulations with NanoSim
-# ------------------------------------------------------------
-#SBATCH --job-name=sim_long_train
-# Keep outputs local to the submission directory
-#SBATCH --output=slurm-%x-%j.out
-#SBATCH --error=slurm-%x-%j.err
-
-# Parallelism & resources (override at submit time if needed)
+#!/bin/bash
+#SBATCH --job-name=sim_long_train_%x
+#SBATCH --output=/path/to/training/logs/%x_%A.out
+#SBATCH --error=/path/to/training/logs/%x_%A.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=48G
 #SBATCH --time=20-00:00:00
-# Optional / cluster-specific:
-# #SBATCH --partition=general
+#SBATCH --partition=allgroups
 
 set -euo pipefail
 umask 0022
 
-# ======================= INPUT ARG =======================
-COMM="${1:-}"
-if [[ -z "$COMM" ]]; then
-  echo "Usage: sbatch slurm/simulate_long_reads.slurm <TrainC_long_XX>" >&2
-  exit 1
-fi
+# Locale & threads
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
+export OMP_NUM_THREADS=1
 
-# ======================= CONFIG (override via env) =======================
-# Repository root (auto-detected from this file's parent directory)
-: "${REPO_ROOT:=$(cd -- "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)}"
+COMM="${1:?Need community id, e.g., TrainC_long_01}"
 
-# Top-level training root used by this pipeline inside the repo
-: "${ROOT:=${REPO_ROOT}/training}"
-
-# Expose BASE so the embedded Python can see it
+# ---- paths ----
+ROOT="/path/to/training"
 export BASE="${ROOT}/train_communities/${COMM}"
-
-# Data & output
 ABUND="${BASE}/abundance"
 OUT="${BASE}/reads/long"
+TMP="${OUT}/.tmp_${SLURM_JOB_ID}"
 LOGDIR="${ROOT}/logs"
-
-# Temporary workspace (local scratch if available, else project dir)
-SCRATCH="${SLURM_TMPDIR:-${OUT}}"
-TMP="${SCRATCH}/.tmp_${SLURM_JOB_ID:-py}_${COMM}"
-
 mkdir -p "$OUT" "$TMP" "$LOGDIR"
 
-# ======================= TOOLS =======================
-# Prefer PATH discovery; allow explicit override via env
-: "${PYTHON_BIN:=$(command -v python3 || true)}"
-: "${SEQTK:=$(command -v seqtk || true)}"
-: "${PARALLEL_BIN:=$(command -v parallel || true)}"
+# ---- tools (NanoSim env only) ----
+PYTHON="/path/to/miniconda3/envs/nanosim/bin/python"
+SEQTK="/path/to//miniconda3/envs/nanosim/bin/seqtk"
+NANOSIM_REPO="/path/to/tools/NanoSim"
+SIMULATOR_PY="${NANOSIM_REPO}/src/simulator.py"
 
-# NanoSim installation (either SIMULATOR_PY path or `nanosim` module)
-# If you use a source checkout, set SIMULATOR_PY to path/to/src/simulator.py
-: "${SIMULATOR_PY:=}"
+command -v parallel >/dev/null 2>&1 || { echo "[ERR] GNU parallel not found"; exit 2; }
+[[ -x "$PYTHON" ]] || { echo "[ERR] Python not found at $PYTHON"; exit 2; }
+[[ -x "$SEQTK"  ]] || { echo "[ERR] seqtk not found at $SEQTK"; exit 2; }
+[[ -s "$SIMULATOR_PY" ]] || { echo "[ERR] NanoSim simulator.py missing at $SIMULATOR_PY"; exit 2; }
 
-# Sanity checks
-[[ -n "${PYTHON_BIN}" && -x "${PYTHON_BIN}" ]] || { echo "[ERR] python3 not found (set PYTHON_BIN)." >&2; exit 2; }
-[[ -n "${SEQTK}" && -x "${SEQTK}" ]] || { echo "[ERR] seqtk not found (set SEQTK or add to PATH)." >&2; exit 2; }
-[[ -n "${PARALLEL_BIN}" && -x "${PARALLEL_BIN}" ]] || { echo "[ERR] GNU parallel not found (set PARALLEL_BIN or add to PATH)." >&2; exit 2; }
-
-if [[ -z "${SIMULATOR_PY}" ]]; then
-  # Try to locate NanoSim simulator.py via Python import path
-  SIMULATOR_PY="$(${PYTHON_BIN} - <<'PY'
-import sys, importlib.util
-spec = importlib.util.find_spec('nanosim')
-if not spec or not spec.submodule_search_locations:
-    print('')
-else:
-    import os
-    # common layout .../nanosim/src/simulator.py (pip wheels may differ)
-    for root in spec.submodule_search_locations:
-        cand = os.path.join(root, 'src', 'simulator.py')
-        if os.path.exists(cand):
-            print(cand)
-            break
+# ---- Check scikit-learn version ----
+REQ_SKLEARN="0.23.2"
+CUR_SKLEARN="$("$PYTHON" - <<'PY'
+import sklearn, sys
+print(sklearn.__version__)
 PY
 )"
+if [[ "$CUR_SKLEARN" != "$REQ_SKLEARN" ]]; then
+  echo "[ERR] scikit-learn version is ${CUR_SKLEARN}, but model requires ${REQ_SKLEARN}. Please pin your nanosim env to scikit-learn==${REQ_SKLEARN}." >&2
+  exit 9
 fi
-[[ -n "${SIMULATOR_PY}" && -s "${SIMULATOR_PY}" ]] || { echo "[ERR] NanoSim simulator.py not found. Set SIMULATOR_PY to the file path." >&2; exit 2; }
 
-# ======================= NanoSim model =======================
-# Option A: provide a tarball to unpack once per community
-: "${NANOSIM_MODEL_TAR:=}"
-# Option B: point to an existing prepared model directory containing a 'model' subdir
-: "${MODEL_DIR:=${BASE}/.nanosim_model}"
-
+# ---- NanoSim model (cached per community) ----
+MODEL_TAR="/nfsd/bcb/bcbg/tools/NanoSim/pre-trained_models/metagenome_ERR3152364_Even_v3.2.2.tar.gz"
+MODEL_DIR="${BASE}/.nanosim_model"
 if [[ ! -d "${MODEL_DIR}/model" ]]; then
-  if [[ -n "${NANOSIM_MODEL_TAR}" && -s "${NANOSIM_MODEL_TAR}" ]]; then
-    mkdir -p "${MODEL_DIR}/model"
-    tar -xzf "${NANOSIM_MODEL_TAR}" -C "${MODEL_DIR}/model" --strip-components=1
-  else
-    echo "[ERR] NanoSim model not found. Either set NANOSIM_MODEL_TAR to a valid tar.gz or provide MODEL_DIR with a 'model' subdirectory." >&2
-    exit 2
-  fi
+  mkdir -p "${MODEL_DIR}/model"
+  tar -xzf "$MODEL_TAR" -C "${MODEL_DIR}/model" --strip-components=1
 fi
 
-# ======================= Targets & ratios =======================
-# Long-read totals per scenario (override if desired)
-: "${TOTAL_READS_GENERIC:=300000}"
-: "${TOTAL_READS_FILTERED:=80000}"
+MODEL_PREFIX="training"
+export MODEL_PREFIX
+echo "[INFO] NanoSim model prefix: $MODEL_PREFIX"
 
-# Class ratios (generic and filtered); defaults mirror your originals
-: "${GEN_PROK_RATIO:=0.56}"; : "${GEN_EUK_RATIO:=0.24}"; : "${GEN_VIR_RATIO:=0.10}"; : "${GEN_PLA_RATIO:=0.10}"
-: "${FIL_PROK_RATIO:=0.14}"; : "${FIL_EUK_RATIO:=0.06}"; : "${FIL_VIR_RATIO:=0.40}"; : "${FIL_PLA_RATIO:=0.40}"
+# ---- targets (per community) ----
+# Generic total: 300k reads => prok 168k, euk 72k, virus 30k, plasmid 30k
+# Filtered total: 80k reads => prok 11.2k, euk 4.8k, virus 32k, plasmid 32k
+GEN_PROK=168000; GEN_EUK=72000; GEN_VIR=30000; GEN_PLA=30000
+FIL_PROK=11200;  FIL_EUK=4800;  FIL_VIR=32000;  FIL_PLA=32000
 
-# Compute integer targets per class
-calc_target(){ ${PYTHON_BIN} - "$@" <<'PY'
-import sys, math
-T = int(sys.argv[1])
-ratios = list(map(float, sys.argv[2:]))
-# largest remainder to hit exact total
-floors = [int(math.floor(T*r)) for r in ratios]
-rem = T - sum(floors)
-order = sorted(range(len(ratios)), key=lambda i: (T*ratios[i]-floors[i]), reverse=True)
-for i in order[:rem]:
-    floors[i]+=1
-print('\n'.join(map(str,floors)))
-PY
-}
-read GEN_PROK GEN_EUK GEN_VIR GEN_PLA < <(calc_target "$TOTAL_READS_GENERIC" "$GEN_PROK_RATIO" "$GEN_EUK_RATIO" "$GEN_VIR_RATIO" "$GEN_PLA_RATIO")
-read FIL_PROK FIL_EUK FIL_VIR FIL_PLA < <(calc_target "$TOTAL_READS_FILTERED" "$FIL_PROK_RATIO" "$FIL_EUK_RATIO" "$FIL_VIR_RATIO" "$FIL_PLA_RATIO")
+# Simulate ONCE per class at MAX(Generic, Filtered).
+export SIM_PROK=$GEN_PROK
+export SIM_EUK=$GEN_EUK
+export SIM_VIR=$FIL_VIR
+export SIM_PLA=$FIL_PLA
 
-# We'll simulate ONCE per class at MAX(Generic, Filtered) to reuse pools
-export SIM_PROK=$(( GEN_PROK > FIL_PROK ? GEN_PROK : FIL_PROK ))
-export SIM_EUK=$(( GEN_EUK > FIL_EUK ? GEN_EUK : FIL_EUK ))
-export SIM_VIR=$(( GEN_VIR > FIL_VIR ? GEN_VIR : FIL_VIR ))
-export SIM_PLA=$(( GEN_PLA > FIL_PLA ? GEN_PLA : FIL_PLA ))
-
-# Prune tiny per-genome allocations and redistribute (speeds up dramatically)
-: "${MIN_READS_PER_GENOME:=50}"; export MIN_READS_PER_GENOME
+# Prune tiny per-genome allocations and redistribute
+MIN_READS_PER_GENOME="${MIN_READS_PER_GENOME:-500}"
+export MIN_READS_PER_GENOME
 
 echo "[PLAN] ${COMM}: simulate class pools (long reads)"
 printf "  Prokaryote     pool: %d\n" "$SIM_PROK"
@@ -137,9 +85,9 @@ printf "  Microeukaryote pool: %d\n" "$SIM_EUK"
 printf "  Virus          pool: %d\n" "$SIM_VIR"
 printf "  Plasmid        pool: %d\n" "$SIM_PLA"
 
-# ======================= build per-class plan =======================
+# ---- build per-class plans (largest-remainder rounding + prune) ----
 PLAN="${TMP}/plan.tsv"
-/usr/bin/env python3 - "$PLAN" <<'PY'
+"$PYTHON" - "$PLAN" <<'PY'
 import sys, math, os
 from pathlib import Path
 
@@ -158,7 +106,6 @@ tsv = {
  "Virus":          base/"abundance/virus_generic.tsv",
  "Plasmid":        base/"abundance/plasmid_generic.tsv",
 }
-
 target = {"Prokaryote":SIM_PROK,"Microeukaryote":SIM_EUK,"Virus":SIM_VIR,"Plasmid":SIM_PLA}
 
 def load_items(tsvfile):
@@ -176,7 +123,6 @@ with out_plan.open('w') as out:
         T = target[G]
         if T <= 0 or not items: continue
 
-        # Initial largest-remainder rounding
         s = sum(w for _,w in items) or 1.0
         floors=[]; rema=[]; sf=0
         for p,w in items:
@@ -188,7 +134,6 @@ with out_plan.open('w') as out:
             for row in floors:
                 if row[0]==p: row[1]+=1; break
 
-        # Prune tiny allocations and redistribute proportionally
         small = sum(k for _,k in floors if k < MINR)
         keep = [(p,k) for p,k in floors if k >= MINR]
         if small > 0 and keep:
@@ -210,25 +155,35 @@ PY
 
 echo "[PLAN] $(wc -l < "$PLAN") genome rows"
 
-# ======================= simulate per genome in parallel =======================
+# ---- simulate per genome in parallel; produce per-class POOLS ----
 mkdir -p "${TMP}/Prokaryote" "${TMP}/Microeukaryote" "${TMP}/Virus" "${TMP}/Plasmid"
 
-export PYTHON_BIN SIMULATOR_PY MODEL_DIR TMP
-"${PARALLEL_BIN}" -j "${SLURM_CPUS_PER_TASK}" --colsep '\t' '
+PAR_OPTS="--jobs ${SLURM_CPUS_PER_TASK} --line-buffer --delay 0.2 --halt now,fail=1"
+export PYTHON SIMULATOR_PY MODEL_DIR TMP MODEL_PREFIX
+parallel ${PAR_OPTS} --colsep '\t' '
   i={#}; GENOME={1}; READS={2}; GRP={3}
   [[ "$READS" -gt 0 ]] || exit 0
   PREF="${TMP}/${GRP}/ns_${i}"
   (
-    cd "${MODEL_DIR}/model" && \
-    "${PYTHON_BIN}" "${SIMULATOR_PY}" genome -r "$GENOME" -n "$READS" -o "$PREF" --seed $((42+i))
-  ) && (
-    [[ -s "${PREF}_reads.fastq" ]] && mv "${PREF}_reads.fastq" "${TMP}/${GRP}/chunk_${i}.fastq" \
-      || [[ -s "${PREF}_reads.fasta" ]] && mv "${PREF}_reads.fasta" "${TMP}/${GRP}/chunk_${i}.fastq" \
-      || echo "[WARN] No reads for ${GENOME}"
+    cd "$MODEL_DIR/model" \
+    && "$PYTHON" "$SIMULATOR_PY" genome -r "$GENOME" -n "$READS" -o "$PREF" \
+       --seed $((42+i)) -t 1 --fastq -min 50 -c "$MODEL_PREFIX"
   )
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "[ERR] NanoSim failed (rc=$rc) for $GENOME" >&2
+    exit $rc
+  fi
+  if [[ -s "${PREF}_reads.fastq" ]]; then
+    mv "${PREF}_reads.fastq" "${TMP}/${GRP}/chunk_${i}.fastq"
+  elif [[ -s "${PREF}_reads.fasta" ]]; then
+    mv "${PREF}_reads.fasta" "${TMP}/${GRP}/chunk_${i}.fastq"
+  else
+    echo "[WARN] No reads for ${GENOME}"
+  fi
 ' :::: "$PLAN"
 
-# ======================= Merge class pools =======================
+# ---- Merge class pools ----
 POOL_PROK="${OUT}/pool_prokaryote.fastq"
 POOL_EUK="${OUT}/pool_microeukaryote.fastq"
 POOL_VIR="${OUT}/pool_virus.fastq"
@@ -239,12 +194,32 @@ if compgen -G "${TMP}/Microeukaryote/chunk_*.fastq" > /dev/null; then cat "${TMP
 if compgen -G "${TMP}/Virus/chunk_*.fastq" > /dev/null; then cat "${TMP}/Virus"/chunk_*.fastq > "$POOL_VIR"; else : > "$POOL_VIR"; fi
 if compgen -G "${TMP}/Plasmid/chunk_*.fastq" > /dev/null; then cat "${TMP}/Plasmid"/chunk_*.fastq > "$POOL_PLA"; else : > "$POOL_PLA"; fi
 
-# ======================= helpers =======================
+# ---- Require pools to be large enough before sampling ----
+need_pool () {
+  local file="$1" label="$2" need="$3"
+  local have=0
+  [[ -s "$file" ]] && have=$(( $(wc -l < "$file") / 4 ))
+  if [[ ! -s "$file" ]]; then
+    echo "[ERR] ${label}: pool file missing/empty: $file" >&2
+    exit 5
+  fi
+  if (( have < need )); then
+    echo "[ERR] ${label}: pool has ${have} reads, need ${need}. Upstream NanoSim produced too few reads." >&2
+    exit 6
+  fi
+}
+
+need_pool "$POOL_PROK" "prok pool" "$GEN_PROK"
+need_pool "$POOL_EUK"  "euk pool"  "$GEN_EUK"
+need_pool "$POOL_VIR"  "virus pool" "$GEN_VIR"
+need_pool "$POOL_PLA"  "plasmid pool" "$GEN_PLA"
+
+# ---- helpers ----
 nreads(){ echo $(( $(wc -l < "$1") / 4  )); }
 
 sample_exact () {
   local IN="$1" TARGET="$2" OUT="$3" LABEL="$4"
-  "${SEQTK}" sample -s 42 "$IN" "$TARGET" > "$OUT"
+  "$SEQTK" sample -s 42 "$IN" "$TARGET" > "$OUT"
   local GOT=$(( $(wc -l < "$OUT") / 4 ))
   if [[ "$GOT" -ne "$TARGET" ]]; then
     echo "[ERR] ${LABEL}: wanted $TARGET reads, got $GOT" >&2
@@ -252,19 +227,11 @@ sample_exact () {
   fi
 }
 
-# Sanity log
-echo "[POOL] counts:"
-printf "  prok: %s\n" "$(nreads "$POOL_PROK")"
-printf "  euk : %s\n" "$(nreads "$POOL_EUK")"
-printf "  vir : %s\n" "$(nreads "$POOL_VIR")"
-printf "  pla : %s\n" "$(nreads "$POOL_PLA")"
-
-# ======================= derive Generic & Filtered =======================
+# ---- derive Generic & Filtered from pools (parallel sampling) ----
 GENERIC="${OUT}/generic.fastq"
 FILTERED="${OUT}/filtered.fastq"
 rm -f "$GENERIC" "$FILTERED"
 
-# Generic targets (parallel)
 GEN_PROK_F="${TMP}/gen_prok.fastq"; sample_exact "$POOL_PROK" "$GEN_PROK" "$GEN_PROK_F" "prok(generic)" &
 GEN_EUK_F="${TMP}/gen_euk.fastq";  sample_exact "$POOL_EUK"  "$GEN_EUK"  "$GEN_EUK_F"  "euk(generic)"  &
 GEN_VIR_F="${TMP}/gen_vir.fastq";  sample_exact "$POOL_VIR"  "$GEN_VIR"  "$GEN_VIR_F"  "vir(generic)"  &
@@ -272,7 +239,6 @@ GEN_PLA_F="${TMP}/gen_pla.fastq";  sample_exact "$POOL_PLA"  "$GEN_PLA"  "$GEN_P
 wait
 cat "$GEN_PROK_F" "$GEN_EUK_F" "$GEN_VIR_F" "$GEN_PLA_F" > "$GENERIC"
 
-# Filtered targets (parallel)
 FIL_PROK_F="${TMP}/fil_prok.fastq"; sample_exact "$POOL_PROK" "$FIL_PROK" "$FIL_PROK_F" "prok(filtered)" &
 FIL_EUK_F="${TMP}/fil_euk.fastq";  sample_exact "$POOL_EUK"  "$FIL_EUK"  "$FIL_EUK_F"  "euk(filtered)"  &
 FIL_VIR_F="${TMP}/fil_vir.fastq";  sample_exact "$POOL_VIR"  "$FIL_VIR"  "$FIL_VIR_F"  "vir(filtered)"  &
@@ -280,31 +246,18 @@ FIL_PLA_F="${TMP}/fil_pla.fastq";  sample_exact "$POOL_PLA"  "$FIL_PLA"  "$FIL_P
 wait
 cat "$FIL_PROK_F" "$FIL_EUK_F" "$FIL_VIR_F" "$FIL_PLA_F" > "$FILTERED"
 
+echo "[POOL] counts:"
+printf "  prok: %s\n" "$(nreads "$POOL_PROK")"
+printf "  euk : %s\n" "$(nreads "$POOL_EUK")"
+printf "  vir : %s\n" "$(nreads "$POOL_VIR")"
+printf "  pla : %s\n" "$(nreads "$POOL_PLA")"
+
 echo "[DONE] ${COMM} long-read simulations"
 echo "  Generic : ${GENERIC}  (reads=$(nreads "$GENERIC"))"
 echo "  Filtered: ${FILTERED} (reads=$(nreads "$FILTERED"))"
 
-# Optional: compress final outputs to save space (uncomment if desired)
-# if command -v pigz >/dev/null 2>&1; then pigz -p ${SLURM_CPUS_PER_TASK} "$GENERIC" "$FILTERED"; else gzip "$GENERIC" "$FILTERED"; fi
+# Compress final outputs to save space
+pigz -p ${SLURM_CPUS_PER_TASK} "$GENERIC" "$FILTERED"
 
-# Cleanup big temps
+# Cleanup temps
 rm -rf "$TMP"
-
-# ======================= USAGE NOTES =======================
-# Submit with defaults:
-#   sbatch slurm/simulate_long_reads.slurm TrainC_long_01
-#
-# Override resources at submit time:
-#   sbatch --cpus-per-task=32 --mem=64G --time=10-00:00:00 \
-#          slurm/simulate_long_reads.slurm TrainC_long_01
-#
-# Override model location and totals via env export:
-#   sbatch --export=ALL,NANOSIM_MODEL_TAR=/path/to/model.tar.gz,TOTAL_READS_GENERIC=200000 \
-#          slurm/simulate_long_reads.slurm TrainC_long_01
-#
-# Use a conda env or modules before submission, or add to the top:
-#   module load python/3.10
-#   module load nanosim/3
-#   module load seqtk
-#   # or
-#   source ~/miniconda3/etc/profile.d/conda.sh && conda activate nanosim
