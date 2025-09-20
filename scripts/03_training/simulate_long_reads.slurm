@@ -21,7 +21,7 @@ COMM="${1:?Need community id, e.g., TrainC_long_01}"
 
 # ---- paths ----
 ROOT="/path/to/training"
-export BASE="${ROOT}/train_communities/${COMM}"
+export BASE="${ROOT}/train_communities/${COMM}"   # EXPORT so Python can see it
 ABUND="${BASE}/abundance"
 OUT="${BASE}/reads/long"
 TMP="${OUT}/.tmp_${SLURM_JOB_ID}"
@@ -30,7 +30,7 @@ mkdir -p "$OUT" "$TMP" "$LOGDIR"
 
 # ---- tools (NanoSim env only) ----
 PYTHON="/path/to/miniconda3/envs/nanosim/bin/python"
-SEQTK="/path/to//miniconda3/envs/nanosim/bin/seqtk"
+SEQTK="/path/to/miniconda3/envs/nanosim/bin/seqtk"
 NANOSIM_REPO="/path/to/tools/NanoSim"
 SIMULATOR_PY="${NANOSIM_REPO}/src/simulator.py"
 
@@ -39,7 +39,7 @@ command -v parallel >/dev/null 2>&1 || { echo "[ERR] GNU parallel not found"; ex
 [[ -x "$SEQTK"  ]] || { echo "[ERR] seqtk not found at $SEQTK"; exit 2; }
 [[ -s "$SIMULATOR_PY" ]] || { echo "[ERR] NanoSim simulator.py missing at $SIMULATOR_PY"; exit 2; }
 
-# ---- Check scikit-learn version ----
+# ---- Check scikit-learn version in THIS python (must match model) ----
 REQ_SKLEARN="0.23.2"
 CUR_SKLEARN="$("$PYTHON" - <<'PY'
 import sklearn, sys
@@ -52,7 +52,7 @@ if [[ "$CUR_SKLEARN" != "$REQ_SKLEARN" ]]; then
 fi
 
 # ---- NanoSim model (cached per community) ----
-MODEL_TAR="/nfsd/bcb/bcbg/tools/NanoSim/pre-trained_models/metagenome_ERR3152364_Even_v3.2.2.tar.gz"
+MODEL_TAR="/path/to/tools/NanoSim/pre-trained_models/metagenome_ERR3152364_Even_v3.2.2.tar.gz"
 MODEL_DIR="${BASE}/.nanosim_model"
 if [[ ! -d "${MODEL_DIR}/model" ]]; then
   mkdir -p "${MODEL_DIR}/model"
@@ -160,10 +160,12 @@ mkdir -p "${TMP}/Prokaryote" "${TMP}/Microeukaryote" "${TMP}/Virus" "${TMP}/Plas
 
 PAR_OPTS="--jobs ${SLURM_CPUS_PER_TASK} --line-buffer --delay 0.2 --halt now,fail=1"
 export PYTHON SIMULATOR_PY MODEL_DIR TMP MODEL_PREFIX
+
 parallel ${PAR_OPTS} --colsep '\t' '
   i={#}; GENOME={1}; READS={2}; GRP={3}
   [[ "$READS" -gt 0 ]] || exit 0
   PREF="${TMP}/${GRP}/ns_${i}"
+
   (
     cd "$MODEL_DIR/model" \
     && "$PYTHON" "$SIMULATOR_PY" genome -r "$GENOME" -n "$READS" -o "$PREF" \
@@ -174,11 +176,35 @@ parallel ${PAR_OPTS} --colsep '\t' '
     echo "[ERR] NanoSim failed (rc=$rc) for $GENOME" >&2
     exit $rc
   fi
-  if [[ -s "${PREF}_reads.fastq" ]]; then
-    mv "${PREF}_reads.fastq" "${TMP}/${GRP}/chunk_${i}.fastq"
-  elif [[ -s "${PREF}_reads.fasta" ]]; then
-    mv "${PREF}_reads.fasta" "${TMP}/${GRP}/chunk_${i}.fastq"
-  else
+
+  # Collect ANY NanoSim reads for this prefix (aligned + unaligned/random; fastq or fasta)
+  shopt -s nullglob
+  OUTF="${TMP}/${GRP}/chunk_${i}.fastq"
+  found=0
+
+  # FASTQ directly
+  for f in "${PREF}"*_reads.fastq "${PREF}"*unaligned_reads.fastq "${PREF}"*random_reads.fastq; do
+    [[ -e "$f" ]] || continue
+    cat "$f" >> "$OUTF"
+    found=1
+  done
+
+  # FASTA -> FASTQ with dummy qualities
+  for f in "${PREF}"*_reads.fasta "${PREF}"*unaligned_reads.fasta "${PREF}"*random_reads.fasta; do
+    [[ -e "$f" ]] || continue
+    awk '\''BEGIN{RS=">"; ORS=""}
+         NR>1{
+           split($0,a,"\n"); h=a[1]; seq=""
+           for(i=2;i<=length(a);i++) seq=seq a[i]
+           gsub(/\r|\n/,"",seq)
+           if(length(seq)>0)
+             printf("@%s\n%s\n+\n%s\n", h, seq, gensub(/./,"I","g",seq))
+         }'\'' "$f" >> "$OUTF"
+    found=1
+  done
+
+  if [[ $found -eq 0 || ! -s "$OUTF" ]]; then
+    rm -f "$OUTF"
     echo "[WARN] No reads for ${GENOME}"
   fi
 ' :::: "$PLAN"
@@ -215,7 +241,7 @@ need_pool "$POOL_VIR"  "virus pool" "$GEN_VIR"
 need_pool "$POOL_PLA"  "plasmid pool" "$GEN_PLA"
 
 # ---- helpers ----
-nreads(){ echo $(( $(wc -l < "$1") / 4  )); }
+nreads(){ echo $(( $(wc -l < "$1") / 4 )); }
 
 sample_exact () {
   local IN="$1" TARGET="$2" OUT="$3" LABEL="$4"
