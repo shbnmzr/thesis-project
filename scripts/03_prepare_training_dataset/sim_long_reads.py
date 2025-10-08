@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NanoSim community runner (Python version)
+NanoSim community runner
 ========================================
 
-This script re-implements your Bash workflow in Python:
+This script:
 - Builds/uses merged abundance files for two scenarios (generic & filtered)
 - Prepares per-genome refset symlinks (or unzips .gz)
 - Allocates read counts exactly to the requested total
@@ -331,10 +331,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     ap.add_argument('--comm', required=True, type=Path, help='Community root directory')
     ap.add_argument('--model-dir', required=True, type=Path, help='NanoSim model directory or prefix source')
-    ap.add_argument('--python-bin', type=Path, default=Path('/home/zareshahra/miniconda3/envs/nanosim/bin/python'))
-    ap.add_argument('--simulator', type=Path, default=Path('/nfsd/bcb/bcbg/tools/NanoSim/src/simulator.py'))
-    ap.add_argument('--minimap2', type=Path, default=Path('/home/zareshahra/miniconda3/envs/minimap2_env/bin/minimap2'))
-    ap.add_argument('--samtools', type=Path, default=Path('/home/zareshahra/miniconda3/envs/minimap2_env/bin/samtools'))
+    ap.add_argument('--python-bin', type=Path, default=Path('/path/to/miniconda3/envs/nanosim/bin/python'))
+    ap.add_argument('--simulator', type=Path, default=Path('/path/to/NanoSim/src/simulator.py'))
+    ap.add_argument('--minimap2', type=Path, default=Path('/path/to/miniconda3/envs/minimap2_env/bin/minimap2'))
+    ap.add_argument('--samtools', type=Path, default=Path('/path/to/miniconda3/envs/minimap2_env/bin/samtools'))
 
     ap.add_argument('--generic-total-reads', type=int, default=3_000_000)
     ap.add_argument('--filtered-total-reads', type=int, default=800_000)
