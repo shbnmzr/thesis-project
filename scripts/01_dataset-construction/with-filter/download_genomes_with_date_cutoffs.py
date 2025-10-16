@@ -8,7 +8,7 @@ Usage:
         --train_cutoff 2021-12-31 \
         --val_cutoff 2022-04-01 \
         --test_end 2023-04-01 \
-        --base_dir ./4CAC_dataset
+        --base_dir ./my_dataset
 """
 
 import argparse
